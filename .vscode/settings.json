@@ -1,3 +1,8 @@
 {
-    "gitdoc.enabled": true
+  "gitdoc.username": "github-actions[bot]",
+  "gitdoc.email": "github-actions[bot]@users.noreply.github.com",
+  "gitdoc.message": "auto: update by GitDoc",
+  "gitdoc.push": true,
+  "gitdoc.pull": true,
+  "gitdoc.enabled": true
 }
